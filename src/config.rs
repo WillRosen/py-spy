@@ -39,6 +39,8 @@ pub struct Config {
     #[doc(hidden)]
     pub subprocesses: bool,
     #[doc(hidden)]
+    pub whitelist: Option<Vec<String>>,
+    #[doc(hidden)]
     pub gil_only: bool,
     #[doc(hidden)]
     pub hide_progress: bool,
@@ -110,13 +112,31 @@ impl Default for Config {
     /// Initializes a new Config object with default parameters
     #[allow(dead_code)]
     fn default() -> Config {
-        Config{pid: None, python_program: None, filename: None, format: None,
-               command: String::from("top"),
-               blocking: LockingStrategy::Lock, show_line_numbers: false, sampling_rate: 100,
-               duration: RecordDuration::Unlimited, native: false,
-               gil_only: false, include_idle: false, include_thread_ids: false,
-               hide_progress: false, capture_output: true, dump_json: false, dump_locals: 0, subprocesses: false,
-               full_filenames: false, lineno: LineNo::LastInstruction }
+        Config {
+            pid: None,
+            python_program: None,
+            filename: None,
+            format: None,
+            command: String::from("top"),
+            blocking: LockingStrategy::Lock,
+            show_line_numbers: false,
+            sampling_rate: 100,
+            duration: RecordDuration::Unlimited,
+            native: false,
+            gil_only: false,
+            include_idle: false,
+            include_thread_ids: false,
+            hide_progress: false,
+            capture_output: true,
+            dump_json: false,
+            dump_locals: 0,
+            subprocesses: false,
+            whitelist: None,
+            full_filenames: false,
+            lineno: LineNo::LastInstruction,
+            refresh_seconds: 1.0,
+            core_filename: None,
+        }
     }
 }
 
@@ -162,9 +182,15 @@ impl Config {
                             .long("subprocesses")
                             .help("Profile subprocesses of the original process");
 
-        let full_filenames = Arg::new("full_filenames")
-                                .long("full-filenames")
-                                .help("Show full Python filenames, instead of shortening to show only the package part");
+        let whitelist = Arg::new("whitelist")
+            .short('w')
+            .long("whitelist")
+            .help("A comma separated list of subprocess names to spy on")
+            .takes_value(true);
+
+        let full_filenames = Arg::new("full_filenames").long("full-filenames").help(
+            "Show full Python filenames, instead of shortening to show only the package part",
+        );
         let program = Arg::new("python_program")
                     .help("commandline of a python program to run")
                     .multiple_values(true);
@@ -209,17 +235,21 @@ impl Config {
                 .takes_value(true))
             .arg(rate.clone())
             .arg(subprocesses.clone())
-            .arg(Arg::new("function")
-                .short('F')
-                .long("function")
-                .help("Aggregate samples by function's first line number, instead of current line number"))
-            .arg(Arg::new("nolineno")
-                .long("nolineno")
-                .help("Do not show line numbers"))
-            .arg(Arg::new("threads")
-                .short('t')
-                .long("threads")
-                .help("Show thread ids in the output"))
+            .arg(whitelist.clone())
+            .arg(Arg::new("function").short('F').long("function").help(
+                "Aggregate samples by function's first line number, instead of current line number",
+            ))
+            .arg(
+                Arg::new("nolineno")
+                    .long("nolineno")
+                    .help("Do not show line numbers"),
+            )
+            .arg(
+                Arg::new("threads")
+                    .short('t')
+                    .long("threads")
+                    .help("Show thread ids in the output"),
+            )
             .arg(gil.clone())
             .arg(idle.clone())
             .arg(Arg::new("capture")
@@ -237,6 +267,7 @@ impl Config {
             .arg(pid.clone().required_unless_present("python_program"))
             .arg(rate.clone())
             .arg(subprocesses.clone())
+            .arg(whitelist.clone())
             .arg(full_filenames.clone())
             .arg(gil.clone())
             .arg(idle.clone());
@@ -254,7 +285,8 @@ impl Config {
                 .short('j')
                 .long("json")
                 .help("Format output as JSON"))
-            .arg(subprocesses.clone());
+            .arg(subprocesses.clone())
+            .arg(whitelist.clone());
 
         let completions = Command::new("completions")
             .about("Generate shell completions")
@@ -344,6 +376,9 @@ impl Config {
 
         config.subprocesses = matches.occurrences_of("subprocesses") > 0;
         config.command = subcommand.to_owned();
+        config.whitelist =  matches.value_of("whitelist")
+            .map(|p| p.split(',').map(String::from).collect());
+        
 
         // options that can be shared between subcommands
         config.pid = matches.value_of("pid").map(|p| p.parse().expect("invalid pid"));

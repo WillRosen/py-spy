@@ -1,8 +1,11 @@
-use std::collections::HashMap;
-use std::sync::mpsc::{self, Sender, Receiver};
-use std::sync::{Mutex, Arc};
-use std::time::Duration;
+#![allow(clippy::type_complexity)]
+
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use anyhow::Error;
 
@@ -121,16 +124,28 @@ impl Sampler {
         let monitor_spies = spies.clone();
         let monitor_config = config.clone();
         std::thread::spawn(move || {
+            let mut checked_pids = HashSet::new();
+
             while process.exe().is_ok() {
                 match monitor_spies.lock() {
                     Ok(mut spies) => {
-                        for (childpid, parentpid) in process.child_processes().expect("failed to get subprocesses") {
-                            if spies.contains_key(&childpid) {
-                                continue;
+                        for (childpid, parentpid) in process
+                            .child_processes()
+                            .expect("failed to get subprocesses")
+                        {
+                            if checked_pids.insert(childpid) == false {
+                                continue; // Already in set
                             }
-                            match PythonSpyThread::new(childpid, Some(parentpid), &monitor_config) {
-                                Ok(spy) => { spies.insert(childpid, spy); }
-                                Err(e) => { warn!("Failed to create spy for {}: {}", childpid, e);  }
+
+                            if is_process_whitelisted(childpid, &monitor_config) {
+                                match PythonSpyThread::new(childpid, Some(parentpid), &monitor_config) {
+                                    Ok(spy) => {
+                                        spies.insert(childpid, spy);
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to create spy for {}: {}", childpid, e);
+                                    }
+                                }
                             }
                         }
                     },
@@ -335,4 +350,32 @@ fn get_process_info(pid: Pid, spies: &HashMap<Pid, PythonSpyThread>) -> Option<B
         let parent = spy.parent.and_then(|parentpid| get_process_info(parentpid, spies));
         Box::new(ProcessInfo{pid, parent, command_line: spy.command_line.clone()})
     })
+}
+
+fn get_process_name(pid: Pid) -> Result<String, Error>{
+    let proc = remoteprocess::Process::new(pid)?;
+    let exe_path = proc.exe()?;
+    let exe_name = Path::new(&exe_path).file_stem().ok_or(anyhow!("Failed to get process name"))?;
+
+    Ok(exe_name.to_str().unwrap().into())
+}
+
+// True if no/empty whitelist, or processs name in whitelist
+fn is_process_whitelisted(pid: Pid, monitor_config: &Config) -> bool {
+    if monitor_config.whitelist.is_none(){
+        return true;
+    }
+    let whitelist = monitor_config.whitelist.as_ref().unwrap();
+    if whitelist.len() == 0 {
+        return true;
+    }
+    match get_process_name(pid) {
+        Ok(proc_name) => {
+            whitelist.iter().any(|item|item.eq_ignore_ascii_case(&proc_name))
+        }
+        Err(_) => {
+            warn!("Failed to get process name for PID: {}", pid);
+            false
+        }
+    }
 }
